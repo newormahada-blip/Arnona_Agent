@@ -42,6 +42,16 @@ snapshot = {
     ),
 }
 
+# Unchanged data -> leave the file alone (no empty commit every scheduled run).
+try:
+    with open(args.out, encoding="utf-8") as f:
+        old = json.load(f)
+    if {k: v for k, v in old.items() if k != "generated_at"} == {k: v for k, v in snapshot.items() if k != "generated_at"}:
+        print(f"{args.out} is up to date ({len(businesses)} businesses, {len(types)} business types)")
+        sys.exit(0)
+except (OSError, ValueError):
+    pass
+
 os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
 with open(args.out, "w", encoding="utf-8") as f:
     json.dump(snapshot, f, ensure_ascii=False, indent=1)
