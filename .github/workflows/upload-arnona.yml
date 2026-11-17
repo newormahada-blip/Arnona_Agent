@@ -6,8 +6,11 @@ on:
       - 'reports/*.xlsx'
     branches:
       - main
-  # Run by hand to refresh reports/agent_snapshot.json without a new report.
+  # Refresh reports/agent_snapshot.json without a new report: by hand, and
+  # every 3 hours so businesses added on the website reach the agent too.
   workflow_dispatch:
+  schedule:
+    - cron: '23 */3 * * *'
 
 jobs:
   upload:
