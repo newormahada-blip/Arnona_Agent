@@ -6,11 +6,15 @@ on:
       - 'reports/*.xlsx'
     branches:
       - main
+  # Run by hand to refresh reports/agent_snapshot.json without a new report.
+  workflow_dispatch:
 
 jobs:
   upload:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repo
@@ -27,6 +31,7 @@ jobs:
           pip install openpyxl requests
 
       - name: Find latest report
+        if: github.event_name == 'push'
         id: find_report
         run: |
           REPORT=$(find reports -name "דוח נכסים לבדיקה*.xlsx" -type f -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)
@@ -38,6 +43,7 @@ jobs:
           echo "Found report: $REPORT"
 
       - name: Upload to Supabase
+        if: github.event_name == 'push'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -56,7 +62,8 @@ jobs:
           SUPABASE_KEY = os.environ['SUPABASE_KEY']
 
           sys.path.insert(0, "scripts")
-          from arnona_common import StreetTable, fetch_overrides, has_column, extract_links, link_fields
+          from arnona_common import (StreetTable, fetch_overrides, has_column, extract_links, link_fields,
+                                     tidy_address, fetch_all, split_duplicates)
 
           if not os.path.exists(EXCEL_PATH):
               print(f"Error: File not found: {EXCEL_PATH}")
@@ -141,7 +148,7 @@ jobs:
               name = col(row, "שם העסק")
               if not name:
                   continue
-              address = col(row, "כתובת")
+              address = tidy_address(col(row, "כתובת"))
               # Street decides the neighborhood (with employees' corrections);
               # the report's column is only a fallback.
               neighborhood, changed = STREETS.neighborhood(address or "", col(row, "שכונה"))
@@ -171,13 +178,15 @@ jobs:
               print("No records to upload")
               sys.exit(0)
 
-          # Check for duplicates
-          existing_raw = supabase_get("businesses", "select=name,address")
-          existing_names_set = {r["name"].strip().lower() for r in existing_raw if r.get("name")}
-          print(f"Found {len(existing_names_set)} existing businesses in Supabase")
+          # Check for duplicates: name + street + house number after normalizing
+          # (", ירושלים", quotes, titles, בע"מ…) — business_key() in arnona_common.py,
+          # same as the website. Probable duplicates (same address, similar name)
+          # are skipped too and listed in the log.
+          existing_raw = fetch_all(SUPABASE_URL, HEADERS, "businesses", "name,address")
+          print(f"Found {len(existing_raw)} existing businesses in Supabase")
 
-          new_records = [r for r in records if r["name"].strip().lower() not in existing_names_set]
-          skipped = len(records) - len(new_records)
+          new_records, skipped_rows = split_duplicates(records, existing_raw)
+          skipped = len(skipped_rows)
 
           print(f"New records to upload: {len(new_records)}")
 
@@ -254,12 +263,21 @@ jobs:
           print(f"Session: {session_id}")
           EOF
 
+      - name: Refresh the agent's snapshot (existing businesses + business types)
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python scripts/write_agent_snapshot.py --out reports/agent_snapshot.json
+
       - name: Commit and push (if changes)
+        if: always()
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git add -A
-          git commit -m "Auto: Uploaded report $(date +%d.%m.%Y)" || echo "No changes to commit"
+          if [ "${{ github.event_name }}" = "push" ]; then MSG="Auto: Uploaded report $(date +%d.%m.%Y)"; else MSG="Auto: refresh agent snapshot $(date +%d.%m.%Y)"; fi
+          git commit -m "$MSG" || echo "No changes to commit"
           git push || echo "Nothing to push"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

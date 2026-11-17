@@ -6,6 +6,8 @@
 // `authenticated` role — this relay runs as a trusted backend process and needs to
 // bypass RLS, unlike the browser client which authenticates as a real user.
 
+import { businessKey, looksLikeSameBusiness, addressKey, tidyAddress } from "../lib/businessKey.js";
+
 const SUPABASE_URL = process.env.SUPABASE_URL || "https://mcsygsqfyuaexxxwsgem.supabase.co";
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -19,17 +21,24 @@ const HEADERS = {
   "Content-Type": "application/json",
 };
 
+// Every existing business (Supabase returns at most 1,000 rows per request).
 async function getExistingBusinesses() {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/businesses?select=name,address`, {
-    method: "GET",
-    headers: HEADERS,
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`Failed to fetch existing businesses: ${res.statusText} - ${text}`);
-  try {
-    return JSON.parse(text);
-  } catch (e) {
-    throw new Error(`JSON parse error on businesses GET: ${text.substring(0, 200)}`);
+  const all = [];
+  for (;;) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/businesses?select=name,address&order=id`, {
+      method: "GET",
+      headers: { ...HEADERS, Range: `${all.length}-${all.length + 999}` },
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`Failed to fetch existing businesses: ${res.statusText} - ${text}`);
+    let rows;
+    try {
+      rows = JSON.parse(text);
+    } catch (e) {
+      throw new Error(`JSON parse error on businesses GET: ${text.substring(0, 200)}`);
+    }
+    all.push(...rows);
+    if (rows.length < 1000) return all;
   }
 }
 
@@ -91,18 +100,39 @@ export default async function handler(req, res) {
 
     console.log(`[${session_id}] Processing ${businesses.length} businesses from ${file_name}`);
 
-    // Step 1: Fetch existing businesses for deduplication
-    let existingKeys = new Set();
+    // Step 1: Fetch existing businesses for deduplication. Without them the
+    // upload stops — adding blindly is how duplicates got in.
+    let existing;
     try {
-      const existing = await getExistingBusinesses();
-      existingKeys = new Set(existing.map(b => `${b.name}|${b.address}`));
-      console.log(`[${session_id}] Found ${existingKeys.size} existing businesses`);
+      existing = await getExistingBusinesses();
+      console.log(`[${session_id}] Found ${existing.length} existing businesses`);
     } catch (err) {
-      console.warn(`[${session_id}] Could not fetch existing businesses (dedup will be skipped):`, err.message);
+      return res.status(502).json({ error: `Could not check for duplicates: ${err.message}` });
     }
 
-    // Step 2: Filter out duplicates
-    const newBusinesses = businesses.filter(b => !existingKeys.has(`${b.name}|${b.address}`));
+    // Step 2: Filter out duplicates — same name + street + house number after
+    // normalizing (", ירושלים", quotes, titles…), or a very similar name at
+    // the same address. See lib/businessKey.js (same as the website).
+    const keys = new Set(existing.map(b => businessKey(b.name || "", b.address || "")));
+    const byAddress = new Map();
+    const remember = b => {
+      const k = addressKey(b.address || "");
+      byAddress.set(k, [...(byAddress.get(k) || []), b]);
+    };
+    existing.forEach(remember);
+    const newBusinesses = [];
+    for (const raw of businesses) {
+      const b = { ...raw, address: tidyAddress(raw.address || "") };
+      const key = businessKey(b.name || "", b.address);
+      const similar = (byAddress.get(addressKey(b.address)) || []).find(e => looksLikeSameBusiness(b, e));
+      if (keys.has(key) || similar) {
+        console.log(`[${session_id}] Skipped duplicate: ${b.name} / ${b.address}${similar ? ` ~ ${similar.name} / ${similar.address}` : ""}`);
+        continue;
+      }
+      keys.add(key);
+      remember(b);
+      newBusinesses.push(b);
+    }
     const duplicateCount = businesses.length - newBusinesses.length;
 
     console.log(`[${session_id}] New: ${newBusinesses.length}, Duplicates: ${duplicateCount}`);

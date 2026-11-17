@@ -24,6 +24,7 @@ import { fetchLocations, createLocationQueue } from '@/lib/locations'
 import { parseExcelFile, ParseCancelled } from '@/lib/excel/parseInWorker'
 import type { ParsedSheet } from '@/lib/excel/parseSheet'
 import { insertInBatches, BatchInsertError } from '@/lib/batchInsert'
+import { businessKey, addressKey, looksLikeSameBusiness, tidyAddress } from '@/lib/businessKey'
 import { Card, Badge, Button, Input, Select, Spinner, Toggle, SuccessCheck, AnimatedNumber } from '@/components/ui'
 import { FIELD_DEFS, RATING_OPTIONS, type TargetField } from '@/lib/uploadFormat'
 import { splitLink, siteAddressMismatch } from '@/lib/links'
@@ -64,8 +65,14 @@ interface RowIssue { row: number; kind: 'error' | 'warning'; title: string; deta
 /** A file picked for upload, parsed in the background (see parseInWorker). */
 interface LoadedFile { key: string; file: File; status: 'parsing' | 'ready' | 'error'; error?: string; sheet?: ParsedSheet }
 /** One file's share of the upload — saved as its own upload session. */
-interface FilePlan { fileName: string; sessionId: string; parsedCount: number; toAdd: Business[]; duplicates: number }
+/** Not the same name+address, but very likely the same business (same street
+ *  and house number, similar name). Skipped unless the employee adds it anyway. */
+interface Suspect { business: Business; existing: { name: string; address: string }; include: boolean }
+interface FilePlan { fileName: string; sessionId: string; parsedCount: number; toAdd: Business[]; duplicates: number; suspects: Suspect[] }
 interface ValidationResult { files: FilePlan[]; toAdd: Business[]; duplicates: number; issues: RowIssue[]; today: string }
+
+/** Rows of a file that won't be added: duplicates and the suspects left out. */
+const skippedOf = (p: FilePlan) => p.duplicates + p.suspects.filter(s => !s.include).length
 interface DoneSummary { added: number; skipped: number; assigned: number; fileName: string; files: { fileName: string; added: number; skipped: number }[] }
 interface SaveProgress { saved: number; total: number }
 
@@ -251,7 +258,8 @@ function buildBusinesses(
     const excelRow = sheet.rowNumbers[i]
 
     const name = getCol(row, headers, mapping.name)
-    const address = getCol(row, headers, mapping.address)
+    // Stored without ", ירושלים" at the end, so the same address is written one way.
+    const address = tidyAddress(getCol(row, headers, mapping.address))
     if (!name || !address) {
       issues.push({
         row: excelRow,
@@ -592,6 +600,7 @@ export default function UploadPage() {
   const mappedCount = FIELD_DEFS.filter(fd => mapping[fd.key]).length
   const errorCount = validation ? validation.issues.filter(i => i.kind === 'error').length : 0
   const highCount = validation ? validation.toAdd.filter(b => b.suspicionRating === 'גבוה').length : 0
+  const suspectCount = validation ? validation.files.reduce((n, p) => n + p.suspects.length, 0) : 0
   const multiFile = mode === 'file' && (validation?.files.length ?? readyFiles.length) > 1
 
   function goToMapping(ready: LoadedFile[]) {
@@ -657,18 +666,31 @@ export default function UploadPage() {
       throw new Error(`שגיאה בבדיקת כפילויות: ${e instanceof Error ? e.message : e}`)
     }
 
-    // Keys grow as rows are accepted, so a business repeated in another file
-    // (or twice in the same one) is added only once.
-    const keys = new Set(existing.map(b => `${b.name}|${b.address}`))
+    // Businesses are compared by name + street + house number after
+    // normalizing (", ירושלים", quotes, titles, בע"מ… — see businessKey.ts),
+    // not by the raw text. Keys grow as rows are accepted, so a business
+    // repeated in another file (or twice in the same one) is added only once.
+    const keys = new Set(existing.map(b => businessKey(b.name, b.address)))
+    const byAddress = new Map<string, { name: string; address: string }[]>()
+    const remember = (b: { name: string; address: string }) => {
+      const k = addressKey(b.address)
+      byAddress.set(k, [...(byAddress.get(k) ?? []), b])
+    }
+    existing.forEach(remember)
     const plans: FilePlan[] = built.map(({ fileName, sessionId, businesses }) => {
       const toAdd: Business[] = []
+      const suspects: Suspect[] = []
       for (const b of businesses) {
-        const key = `${b.name}|${b.address}`
+        const key = businessKey(b.name, b.address)
         if (keys.has(key)) continue
         keys.add(key)
-        toAdd.push(b)
+        const similar = (byAddress.get(addressKey(b.address)) ?? []).find(e => looksLikeSameBusiness(b, e))
+        remember(b)
+        if (similar) suspects.push({ business: b, existing: { name: similar.name, address: similar.address }, include: false })
+        else toAdd.push(b)
       }
-      return { fileName, sessionId, parsedCount: businesses.length, toAdd, duplicates: businesses.length - toAdd.length }
+      const duplicates = businesses.length - toAdd.length - suspects.length
+      return { fileName, sessionId, parsedCount: businesses.length, toAdd, duplicates, suspects }
     })
 
     savedRowsRef.current = new Map()
@@ -680,6 +702,21 @@ export default function UploadPage() {
       today,
     })
     setStep('validate')
+  }
+
+  // Adds a suspected duplicate after all (or takes it out again).
+  function toggleSuspect(sessionId: string, id: string) {
+    setValidation(v => {
+      if (!v) return v
+      const files = v.files.map(p => {
+        if (p.sessionId !== sessionId) return p
+        const suspects = p.suspects.map(x => (x.business.id === id ? { ...x, include: !x.include } : x))
+        const suspectIds = new Set(suspects.map(x => x.business.id))
+        const toAdd = [...p.toAdd.filter(b => !suspectIds.has(b.id)), ...suspects.filter(x => x.include).map(x => x.business)]
+        return { ...p, suspects, toAdd }
+      })
+      return { ...v, files, toAdd: files.flatMap(p => p.toAdd) }
+    })
   }
 
   async function proceedToValidate() {
@@ -714,7 +751,7 @@ export default function UploadPage() {
         id: `${sessionId}-0`,
         name: manual.name.trim(),
         type: manual.type.trim(),
-        address: manual.address.trim(),
+        address: tidyAddress(manual.address),
         neighborhood: normalizeNeighborhood(manual.neighborhood) ?? '',
         matchedAddress: manual.matchedAddress.trim(),
         unitCount: manual.unitCount.trim(),
@@ -813,7 +850,7 @@ export default function UploadPage() {
           suspiciousCount: plan.toAdd.filter(b => b.arnonaStatus === 'suspicious').length,
           okCount: plan.toAdd.filter(b => b.arnonaStatus === 'ok').length,
           unknownCount: plan.toAdd.filter(b => b.arnonaStatus === 'unknown').length,
-          skippedCount: plan.duplicates,
+          skippedCount: skippedOf(plan),
           businessIds: plan.toAdd.map(b => b.id),
         }
 
@@ -853,10 +890,10 @@ export default function UploadPage() {
       clearCache('businesses', 'sessions')
       setDoneSummary({
         added: toAdd.length,
-        skipped: validation.duplicates,
+        skipped: validation.files.reduce((n, p) => n + skippedOf(p), 0),
         assigned,
         fileName: validation.files.length === 1 ? validation.files[0].fileName : `${validation.files.length} קבצים`,
-        files: validation.files.map(p => ({ fileName: p.fileName, added: p.toAdd.length, skipped: p.duplicates })),
+        files: validation.files.map(p => ({ fileName: p.fileName, added: p.toAdd.length, skipped: skippedOf(p) })),
       })
       setStep('done')
       void locateNewAddresses(toAdd)
@@ -1225,9 +1262,20 @@ export default function UploadPage() {
                     </span>
                     <div className="flex-1">
                       <p className="num text-[18px] font-bold leading-none">{validation.duplicates}</p>
-                      <p className="text-[12px] text-subtle mt-1">כפולים — ידולגו</p>
+                      <p className="text-[12px] text-subtle mt-1">כפולים — כבר קיימים במערכת, ידולגו</p>
                     </div>
                   </div>
+                  {suspectCount > 0 && (
+                    <div className="flex items-center gap-3 px-3.5 py-3 rounded-lg bg-mid/[0.08]">
+                      <span className="w-[30px] h-[30px] rounded-lg bg-mid flex items-center justify-center shrink-0">
+                        <AlertTriangle size={15} className="text-white" strokeWidth={2.4} />
+                      </span>
+                      <div className="flex-1">
+                        <p className="num text-[18px] font-bold leading-none">{suspectCount}</p>
+                        <p className="text-[12px] text-subtle mt-1">חשד לכפילות — ידולגו, אלא אם תסמנו להוסיף (פירוט למטה)</p>
+                      </div>
+                    </div>
+                  )}
                   {errorCount > 0 && (
                     <div className="flex items-center gap-3 px-3.5 py-3 rounded-lg bg-high/[0.07]">
                       <span className="w-[30px] h-[30px] rounded-lg bg-high flex items-center justify-center shrink-0">
@@ -1253,12 +1301,32 @@ export default function UploadPage() {
                           <span className="font-semibold text-ink truncate">{p.fileName}</span>
                           <span className="shrink-0 text-charcoal">
                             <span className="num font-bold text-clear">{p.toAdd.length}</span> חדשים
-                            {p.duplicates > 0 && <> · <span className="num">{p.duplicates}</span> כפולים</>}
+                            {skippedOf(p) > 0 && <> · <span className="num">{skippedOf(p)}</span> כפולים</>}
                             {fileErrors > 0 && <> · <span className="num text-high">{fileErrors}</span> שגיאות</>}
                           </span>
                         </li>
                       )
                     })}
+                  </ul>
+                </Card>
+              )}
+
+              {suspectCount > 0 && (
+                <Card>
+                  <p className="font-bold text-[14.5px]">חשד לכפילות</p>
+                  <p className="text-[12px] text-subtle mt-0.5 mb-3">באותה כתובת כבר קיים עסק עם שם דומה. אם זה עסק אחר — סמנו &quot;להוסיף בכל זאת&quot;.</p>
+                  <ul className="flex flex-col gap-2 max-h-[300px] overflow-auto">
+                    {validation.files.flatMap(p => p.suspects.map(x => (
+                      <li key={x.business.id} className="px-3 py-2.5 rounded-lg border border-mid/25 bg-mid/[0.05] text-[12.5px]">
+                        <p className="text-ink"><span className="font-semibold">{x.business.name}</span> · {x.business.address}</p>
+                        <p className="text-subtle mt-0.5">כבר קיים: <span className="font-semibold text-charcoal">{x.existing.name}</span> · {x.existing.address}</p>
+                        <label className="mt-1.5 inline-flex items-center gap-2 cursor-pointer select-none">
+                          <input type="checkbox" checked={x.include} disabled={submitting || resumable}
+                            onChange={() => toggleSuspect(p.sessionId, x.business.id)} />
+                          <span className="font-semibold text-charcoal">להוסיף בכל זאת</span>
+                        </label>
+                      </li>
+                    )))}
                   </ul>
                 </Card>
               )}

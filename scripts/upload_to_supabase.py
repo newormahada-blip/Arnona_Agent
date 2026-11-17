@@ -23,7 +23,8 @@ import os
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from arnona_common import StreetTable, fetch_overrides, has_column, extract_links, link_fields
+from arnona_common import (StreetTable, fetch_overrides, has_column, extract_links, link_fields,
+                           tidy_address, fetch_all, split_duplicates)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--report", required=True)
@@ -106,7 +107,7 @@ for row in ws.iter_rows(min_row=header_row_idx + 1, values_only=True):
     name = col(row, "שם העסק")
     if not name:
         continue
-    address = col(row, "כתובת")
+    address = tidy_address(col(row, "כתובת"))
     # Street decides the neighborhood (with employees' corrections); the
     # report's column is only a fallback — same as the website.
     neighborhood, changed = STREETS.neighborhood(address or "", col(row, "שכונה"))
@@ -130,11 +131,11 @@ for row in ws.iter_rows(min_row=header_row_idx + 1, values_only=True):
         "arnona_status":       map_status(col(row, "דירוג אינדיקציה")),
     })
 
-existing_raw = supabase_get("businesses", "select=name,address")
-existing_keys = {f"{r['name']}|{r['address']}" for r in existing_raw}
-
-new_records = [r for r in records if f"{r['name']}|{r['address']}" not in existing_keys]
-skipped = len(records) - len(new_records)
+# Compared by name + street + house number after normalizing (", ירושלים",
+# quotes, titles…) — see business_key() in arnona_common.py.
+existing_raw = fetch_all(SUPABASE_URL, HEADERS, "businesses", "name,address")
+new_records, skipped_rows = split_duplicates(records, existing_raw)
+skipped = len(skipped_rows)
 
 print(f"Total: {len(records)} | New: {len(new_records)} | Skipped (dup): {skipped}")
 
