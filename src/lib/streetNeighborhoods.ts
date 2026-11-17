@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { cleanAddress, parseAddress } from './geocode'
+import { streetKey } from './businessKey'
 import { supabase } from './supabase'
 
 // Street → neighborhood table, built by tools/neighborhoods/build_street_index.py
@@ -16,19 +17,8 @@ export interface StreetTable {
   houses: Record<string, Record<string, string>>
 }
 
-const PREFIXES = ['שכ ', 'שכונת ', 'דרך ', 'רחוב ', 'שדרות ', 'שד ', 'הרבנית ', 'הרב ', 'האדמור ', 'רבי ', 'ר ']
-
-// Same key as street_key() in build_street_index.py: no quotes or hyphens, no
-// alley suffix ("סמ3"), no title/street-type prefix, words sorted — so
-// "הרב שמעון אגסי" and "אגסי שמעון" meet.
-export function streetKey(street: string): string {
-  let s = street.replace(/["'`׳״’]/g, '').replace(/-/g, ' ').replace(/\s+/g, ' ').trim()
-  s = s.replace(/\s+סמ\s*\d+$/, '').trim()
-  for (const p of PREFIXES) {
-    if (s.startsWith(p)) s = s.slice(p.length)
-  }
-  return s.split(' ').filter(Boolean).sort().join(' ')
-}
+// streetKey lives in businessKey.ts (import-free, shared with the duplicate check).
+export { streetKey }
 
 /** How the typed street was matched: as written, as a shorter form of one
  *  known street ("בן זאב" → "בן זאב ישראל"), or by a close spelling

@@ -141,3 +141,114 @@ def link_fields(links, allow_extra=True):
     n = 5 if allow_extra else 3
     padded = (list(links) + [None] * 5)[:n]
     return {f"link{i + 1}": padded[i] for i in range(n)}
+
+
+# -------------------------------------------------------------- duplicates
+# Same as src/lib/businessKey.ts (and business_dedup_key() in the database):
+# two businesses are the same when their name and street+house number match
+# after dropping quotes, titles, "בע"מ" and ", ירושלים". Keep them in sync.
+_CITY = re.compile(r"(^|[\s,])(ירושלים|jerusalem)\s*$", re.IGNORECASE)
+_NAME_NOISE = {"בעמ", "בע", "מ", "דר", "עוד", "עו", "פרופ", "פרופסור", "רוח", "מר", "גב", "הרב", "ltd", "inc", "dr"}
+
+
+def tidy_address(address):
+    """The address as it should be stored: no ", ירושלים" at the end."""
+    a = re.sub(r"\s+", " ", address or "").strip()
+    for _ in range(2):
+        if not _CITY.search(a):
+            break
+        a = re.sub(r"[\s,]+$", "", _CITY.sub("", a)).strip()
+    return a
+
+
+def address_key(address):
+    street, number = parse_address(tidy_address(address))
+    return f"{street_key(street)}|{number or ''}"
+
+
+def name_words(name):
+    s = re.sub(r"[\"'`׳״’]", "", (name or "").lower())
+    s = re.sub(r"(?<=[^\W\d_])\.(?=[^\W\d_])", "", s)  # "ד.ר" = "דר"
+    s = re.sub(r"[^\w]+|_", " ", s)
+    return [w for w in s.split(" ") if w and w not in _NAME_NOISE]
+
+
+def name_key(name):
+    return " ".join(sorted(set(name_words(name))))
+
+
+def business_key(name, address):
+    return f"{name_key(name)}#{address_key(address)}"
+
+
+def looks_like_same_business(a_name, a_address, b_name, b_address):
+    """Same street+number and a very similar name (see businessKey.ts)."""
+    ka = address_key(a_address)
+    if ka.endswith("|") or ka != address_key(b_address):
+        return False
+    wa = [w for w in dict.fromkeys(name_words(a_name)) if len(w) > 1]
+    wb = [w for w in dict.fromkeys(name_words(b_name)) if len(w) > 1]
+    if not wa or not wb:
+        return False
+    shared = len(set(wa) & set(wb))
+    if shared >= 2 or (shared == 1 and min(len(set(wa)), len(set(wb))) == 1):
+        return True
+    ja, jb = " ".join(wa), " ".join(wb)
+    return len(ja) >= 4 and len(jb) >= 4 and (ja in jb or jb in ja)
+
+
+class DuplicateIndex:
+    """Existing businesses, to tell whether a new one is already known.
+    `check(name, address)` -> None (new), or ("same"|"similar", existing row)."""
+
+    def __init__(self, rows):
+        self.keys = {}
+        self.by_address = {}
+        for r in rows:
+            self.add(r.get("name") or "", r.get("address") or "", r)
+
+    def add(self, name, address, row=None):
+        row = row or {"name": name, "address": address}
+        self.keys.setdefault(business_key(name, address), row)
+        self.by_address.setdefault(address_key(address), []).append(row)
+
+    def check(self, name, address):
+        hit = self.keys.get(business_key(name, address))
+        if hit:
+            return "same", hit
+        for r in self.by_address.get(address_key(address), []):
+            if looks_like_same_business(name, address, r.get("name") or "", r.get("address") or ""):
+                return "similar", r
+        return None
+
+
+def fetch_all(supabase_url, headers, table, select, order="id"):
+    """Every row (Supabase returns at most 1,000 per request)."""
+    rows, page = [], 1000
+    while True:
+        h = {k: v for k, v in headers.items() if k.lower() != "prefer"}
+        h["Range"] = f"{len(rows)}-{len(rows) + page - 1}"
+        r = requests.get(f"{supabase_url}/rest/v1/{table}?select={select}&order={order}", headers=h, timeout=30)
+        r.raise_for_status()
+        chunk = r.json()
+        rows.extend(chunk)
+        if len(chunk) < page:
+            return rows
+
+
+def split_duplicates(records, existing_rows):
+    """(new records, skipped) — skipped is a list of (record, "same"|"similar", existing row).
+    A business repeated inside the report itself is added once."""
+    index = DuplicateIndex(existing_rows)
+    new, skipped = [], []
+    for r in records:
+        hit = index.check(r["name"], r["address"] or "")
+        if hit:
+            skipped.append((r, hit[0], hit[1]))
+            continue
+        index.add(r["name"], r["address"] or "")
+        new.append(r)
+    for r, kind, ex in skipped:
+        label = "duplicate" if kind == "same" else "probable duplicate"
+        print(f"  skipped ({label}): {r['name']} / {r['address']}  ~  existing: {ex.get('name')} / {ex.get('address')}")
+    return new, skipped
