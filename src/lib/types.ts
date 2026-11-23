@@ -19,7 +19,17 @@ export interface Business {
   uploadSessionId: string
   sentToInspector: 'נשלח לסוקר' | 'לא נשלח לסוקר' | 'הוחלט לא לשלוח לסקר' | null
   surveyResultDetail: 'נמצא פער בסיווג' | 'נמצא פער שטח + סיווג' | 'נמצא פער שטח' | 'לא נמצא עסק/פער שטח' | null
+  /** Field-trip round the property was last sent to the surveyor in (survey_rounds.number); null = none. */
+  surveyRound: number | null
   source: 'manual' | 'excel' | 'promotion'
+}
+
+/** One field trip (סבב יציאה לשטח): a numbered list of properties sent to the surveyor. */
+export interface SurveyRound {
+  number: number
+  /** Day the round was sent (YYYY-MM-DD). */
+  sentAt: string
+  note: string
 }
 
 export interface UploadSession {

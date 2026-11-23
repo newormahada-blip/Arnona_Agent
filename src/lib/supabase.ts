@@ -37,6 +37,7 @@ export function dbToBusiness(row: any): Business {
     uploadSessionId: row.upload_session_id ?? '',
     sentToInspector: row.sent_to_inspector ?? null,
     surveyResultDetail: row.survey_result_detail ?? null,
+    surveyRound: row.survey_round ?? null,
     source: parseSource(row.source),
   }
 }
@@ -62,6 +63,7 @@ export function businessToDb(b: Business) {
     upload_session_id: b.uploadSessionId,
     sent_to_inspector: b.sentToInspector,
     survey_result_detail: b.surveyResultDetail,
+    survey_round: b.surveyRound,
     source: b.source,
   }
 }
