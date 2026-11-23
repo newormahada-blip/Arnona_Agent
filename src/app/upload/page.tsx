@@ -19,6 +19,7 @@ import { cleanAddress, type LocationMap } from '@/lib/geocode'
 import { placementFor, neighborhoodOf } from '@/lib/placement'
 import { fetchAllRows } from '@/lib/fetchAll'
 import { markSentToInspector } from '@/lib/inspectorAssign'
+import { fetchRounds, nextRoundNumber, ensureRound, roundLabel } from '@/lib/surveyRounds'
 import type { GeocodeQueue } from '@/lib/geocodeQueue'
 import { fetchLocations, createLocationQueue } from '@/lib/locations'
 import { parseExcelFile, ParseCancelled } from '@/lib/excel/parseInWorker'
@@ -73,7 +74,7 @@ interface ValidationResult { files: FilePlan[]; toAdd: Business[]; duplicates: n
 
 /** Rows of a file that won't be added: duplicates and the suspects left out. */
 const skippedOf = (p: FilePlan) => p.duplicates + p.suspects.filter(s => !s.include).length
-interface DoneSummary { added: number; skipped: number; assigned: number; fileName: string; files: { fileName: string; added: number; skipped: number }[] }
+interface DoneSummary { added: number; skipped: number; assigned: number; assignedRound: number | null; fileName: string; files: { fileName: string; added: number; skipped: number }[] }
 interface SaveProgress { saved: number; total: number }
 
 // Locating the new addresses on the map, shown on the "done" card. Each
@@ -326,6 +327,7 @@ function buildBusinesses(
       uploadDate: today,
       uploadSessionId: sessionId,
       sentToInspector: null,
+      surveyRound: null,
       surveyResultDetail: null,
       source,
     })
@@ -767,6 +769,7 @@ export default function UploadPage() {
         uploadDate: today,
         uploadSessionId: sessionId,
         sentToInspector: null,
+        surveyRound: null,
         surveyResultDetail: null,
         source: manualSource,
       }
@@ -878,12 +881,18 @@ export default function UploadPage() {
       }
 
       let assigned = 0
+      let assignedRound: number | null = null
       if (autoAssign) {
         const highIds = toAdd.filter(b => b.suspicionRating === 'גבוה').map(b => b.id)
         if (highIds.length > 0) {
-          const assignErr = await markSentToInspector(highIds)
+          // An automatic assignment opens a new field-trip round of its own.
+          const roundNumber = nextRoundNumber(await fetchRounds())
+          const ensured = await ensureRound(roundNumber, 'הקצאה אוטומטית בהעלאת דוח')
+          if ('error' in ensured) throw new Error(`הנכסים נוספו אך פתיחת סבב לסוקר נכשלה: ${ensured.error}`)
+          const assignErr = await markSentToInspector(highIds, roundNumber)
           if (assignErr) throw new Error(`הנכסים נוספו אך ההקצאה לסוקר נכשלה: ${assignErr.message}`)
           assigned = highIds.length
+          assignedRound = roundNumber
         }
       }
 
@@ -892,6 +901,7 @@ export default function UploadPage() {
         added: toAdd.length,
         skipped: validation.files.reduce((n, p) => n + skippedOf(p), 0),
         assigned,
+        assignedRound,
         fileName: validation.files.length === 1 ? validation.files[0].fileName : `${validation.files.length} קבצים`,
         files: validation.files.map(p => ({ fileName: p.fileName, added: p.toAdd.length, skipped: skippedOf(p) })),
       })
@@ -1435,7 +1445,7 @@ export default function UploadPage() {
                 <>נוספו <span className="num font-bold text-ink"><AnimatedNumber value={doneSummary.added} /></span> עסקים חדשים מתוך {doneSummary.fileName}</>
               )}
               {doneSummary.skipped > 0 && <> · <span className="num font-bold"><AnimatedNumber value={doneSummary.skipped} /></span> כפולים דולגו</>}
-              {doneSummary.assigned > 0 && <> · <span className="num font-bold text-brand"><AnimatedNumber value={doneSummary.assigned} /></span> הוקצו אוטומטית לסוקר</>}
+              {doneSummary.assigned > 0 && <> · <span className="num font-bold text-brand"><AnimatedNumber value={doneSummary.assigned} /></span> הוקצו אוטומטית לסוקר{doneSummary.assignedRound && <> (<span className="num">{roundLabel(doneSummary.assignedRound)}</span>)</>}</>}
             </p>
             {mode === 'file' && doneSummary.files.length > 1 && (
               <ul className="w-full max-w-md text-start text-[12.5px] flex flex-col divide-y divide-hairline border border-hairline rounded-xl px-3.5">

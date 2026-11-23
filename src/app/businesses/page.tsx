@@ -11,13 +11,14 @@ import { supabase, businessToDb } from '@/lib/supabase'
 import { useBusinesses } from '@/lib/useBusinesses'
 import { SOURCE_LABEL, SOURCE_OPTIONS, SOURCE_TONE } from '@/lib/sources'
 import { markSentToInspector } from '@/lib/inspectorAssign'
+import { fetchRounds, nextRoundNumber, ensureRound, roundLabel, roundKey, formatRoundDate, NO_ROUND } from '@/lib/surveyRounds'
 import { JERUSALEM_NEIGHBORHOODS } from '@/lib/neighborhoods'
 import { setCache } from '@/lib/cache'
 import { formatDate, parseUploadDate } from '@/lib/dateUtils'
 import { useBusinessTypes, isNewType } from '@/lib/businessTypes'
 import { BusinessTypeField } from '@/components/BusinessTypeField'
 import { INSPECTOR_OPTIONS, SURVEY_RESULT_OPTIONS, NO_SURVEY_RESULT, REPORTED_AWAITING_DECISION, inspectorStatus, surveyResult } from '@/lib/surveyStatus'
-import type { SurveyReport } from '@/lib/types'
+import type { SurveyReport, SurveyRound } from '@/lib/types'
 import type { LocationMap } from '@/lib/geocode'
 import { fetchLocations } from '@/lib/locations'
 import { streetViewUrl } from '@/lib/placement'
@@ -69,8 +70,8 @@ const COLUMNS: { key: SortKey | null; label: string; width: string; accessor?: (
   { key: 'neighborhood', label: 'שכונה', width: '9%', accessor: b => b.neighborhood },
   { key: 'linksCount', label: 'קישורים', width: '6%', accessor: b => linkCount(b) },
   { key: 'suspicionRating', label: 'דירוג', width: '9%', accessor: b => ALL_RATINGS.indexOf(b.suspicionRating) },
-  { key: 'uploadDate', label: 'תאריך · מקור', width: '9%', accessor: b => b.uploadDate },
-  { key: 'sentToInspector', label: 'סוקר', width: '13%', accessor: b => b.sentToInspector ?? '' },
+  { key: 'uploadDate', label: 'תאריך · מקור', width: '9%', accessor: b => parseUploadDate(b.uploadDate)?.getTime() ?? 0 },
+  { key: 'sentToInspector', label: 'סוקר', width: '13%', accessor: b => `${b.sentToInspector ?? ''}|${String(b.surveyRound ?? 0).padStart(5, '0')}` },
   { key: 'surveyResultDetail', label: 'תוצאת סקר', width: '13%', accessor: b => b.surveyResultDetail ?? '' },
 ]
 
@@ -112,6 +113,12 @@ export default function BusinessesPage() {
   const [inspectorFilter, setInspectorFilter] = useState('הכל')
   const [sourceFilter, setSourceFilter] = useState('הכל')
   const [surveyFilter, setSurveyFilter] = useState('הכל')
+  const [roundFilter, setRoundFilter] = useState('הכל')
+  // Field-trip rounds (newest first) and the "send to surveyor" dialog, which
+  // asks which round the selected properties go out in.
+  const [rounds, setRounds] = useState<SurveyRound[]>([])
+  const [sendDialog, setSendDialog] = useState<{ round: string; note: string } | null>(null)
+  useEffect(() => { fetchRounds().then(setRounds) }, [])
   // The surveyor's in-app field reports, by property (newest first), and the
   // stored address coordinates used for the Street View link.
   const [reports, setReports] = useState<Map<string, SurveyReport[]>>(new Map())
@@ -153,6 +160,12 @@ export default function BusinessesPage() {
   // agent's reports — are marked "(חדש)" in the type filter.
   const newTypeNames = useMemo(() => new Set(businessTypes.filter(t => isNewType(t, now)).map(t => t.name)), [businessTypes, now])
   const neighborhoods = useMemo(() => [...new Set(businesses.map(b => b.neighborhood).filter(Boolean))].sort(), [businesses])
+  // Properties per round, for the round filter and the send dialog.
+  const roundCounts = useMemo(() => {
+    const m = new Map<number, number>()
+    businesses.forEach(b => { if (b.surveyRound) m.set(b.surveyRound, (m.get(b.surveyRound) ?? 0) + 1) })
+    return m
+  }, [businesses])
   const ratingsInUse = useMemo(() => ALL_RATINGS.filter(r => businesses.some(b => b.suspicionRating === r)), [businesses])
 
   const filtered = useMemo(() => businesses.filter(b => {
@@ -165,10 +178,11 @@ export default function BusinessesPage() {
       && (inspectorFilter === 'הכל' || inspectorStatus(b) === inspectorFilter)
       && (sourceFilter === 'הכל' || b.source === sourceFilter)
       && (surveyFilter === 'הכל' || (surveyFilter === REPORTED_AWAITING_DECISION ? !b.surveyResultDetail && reports.has(b.id) : surveyResult(b) === surveyFilter))
+      && (roundFilter === 'הכל' || roundKey(b) === roundFilter)
       && (dayFilter === null || uploadDayKey(b) === dayFilter)
-  }), [businesses, search, ratingFilter, typeFilter, neighborhoodFilter, inspectorFilter, sourceFilter, surveyFilter, dayFilter, reports])
+  }), [businesses, search, ratingFilter, typeFilter, neighborhoodFilter, inspectorFilter, sourceFilter, surveyFilter, roundFilter, dayFilter, reports])
 
-  const activeFilterCount = [ratingFilter, typeFilter, neighborhoodFilter, inspectorFilter, sourceFilter, surveyFilter].filter(f => f !== 'הכל').length
+  const activeFilterCount = [ratingFilter, typeFilter, neighborhoodFilter, inspectorFilter, sourceFilter, surveyFilter, roundFilter].filter(f => f !== 'הכל').length
     + (dayFilter ? 1 : 0)
 
   // New suspect properties (גבוה / בינוני) taken in per day, for the last
@@ -235,19 +249,29 @@ export default function BusinessesPage() {
     })
   }
 
+  function openSendDialog() {
+    if (visibleSelectedIds.length === 0) return
+    setSendDialog({ round: String(nextRoundNumber(rounds, businesses)), note: '' })
+  }
+
   async function bulkSendToInspector() {
     const ids = visibleSelectedIds
-    if (ids.length === 0) return
+    if (ids.length === 0 || !sendDialog) return
+    const round = Number(sendDialog.round)
+    if (!Number.isInteger(round) || round < 1) { alert('מספר סבב חייב להיות מספר שלם חיובי'); return }
     setBulkUpdating(true)
-    const error = await markSentToInspector(ids)
+    const ensured = await ensureRound(round, sendDialog.note)
+    const error = 'error' in ensured ? { message: ensured.error } : await markSentToInspector(ids, round)
     if (!error) {
       setBusinesses(prev => {
-        const next = prev.map(b => ids.includes(b.id) ? { ...b, sentToInspector: 'נשלח לסוקר' as const } : b)
+        const next = prev.map(b => ids.includes(b.id) ? { ...b, sentToInspector: 'נשלח לסוקר' as const, surveyRound: round } : b)
         setCache('businesses', next)
         return next
       })
+      if ('round' in ensured) setRounds(prev => [ensured.round, ...prev.filter(r => r.number !== round)].sort((a, b) => b.number - a.number))
       setSelectedIds(new Set())
-      toast(ids.length === 1 ? 'נכס אחד נשלח לסוקר' : `${ids.length.toLocaleString('he')} נכסים נשלחו לסוקר`)
+      setSendDialog(null)
+      toast(`${ids.length === 1 ? 'נכס אחד נשלח לסוקר' : `${ids.length.toLocaleString('he')} נכסים נשלחו לסוקר`} · ${roundLabel(round)}`)
     } else {
       alert(`שגיאה בשליחה לסוקר: ${error.message}`)
     }
@@ -261,7 +285,7 @@ export default function BusinessesPage() {
       'סיבת אי-אינדיקציה': b.noSuspicionReason, 'מספר יחידות': b.unitCount,
       'קישור 1': b.link1, 'קישור 2': b.link2, 'קישור 3': b.link3, 'קישור 4': b.link4, 'קישור 5': b.link5, 'תאריך העלאה': formatDate(b.uploadDate),
       'מקור': SOURCE_LABEL[b.source],
-      'נשלח לסוקר': b.sentToInspector ?? 'לא נשלח לסוקר', 'תוצאת סקר': b.surveyResultDetail ?? '',
+      'נשלח לסוקר': b.sentToInspector ?? 'לא נשלח לסוקר', 'סבב': b.surveyRound ?? '', 'תוצאת סקר': b.surveyResultDetail ?? '',
     }))
     const ws = XLSX.utils.json_to_sheet(rows)
     const wb = XLSX.utils.book_new()
@@ -273,7 +297,17 @@ export default function BusinessesPage() {
     setUpdating(id)
     const business = businesses.find(b => b.id === id)
     if (business) {
-      const updated = { ...business, sentToInspector: status }
+      // A single property sent without a round joins the latest round (or
+      // opens round 1); one moved away keeps its round as history.
+      let surveyRound = business.surveyRound
+      if (status === 'נשלח לסוקר' && !surveyRound) {
+        const target = rounds[0]?.number ?? nextRoundNumber(rounds, businesses)
+        const ensured = await ensureRound(target)
+        if ('error' in ensured) { alert(`שגיאה בשיוך לסבב: ${ensured.error}`); setUpdating(null); return }
+        if (!rounds.some(r => r.number === target)) setRounds(prev => [ensured.round, ...prev])
+        surveyRound = target
+      }
+      const updated = { ...business, sentToInspector: status, surveyRound }
       const { error } = await supabase.from('businesses').update(businessToDb(updated)).eq('id', id)
       if (!error) {
         setBusinesses(prev => {
@@ -281,7 +315,7 @@ export default function BusinessesPage() {
           setCache('businesses', next)
           return next
         })
-        toast(`${business.name}: ${status}`)
+        toast(`${business.name}: ${status}${status === 'נשלח לסוקר' && surveyRound ? ` · ${roundLabel(surveyRound)}` : ''}`)
       }
     }
     setUpdating(null)
@@ -489,7 +523,7 @@ export default function BusinessesPage() {
               <Button
                 variant="ghost"
                 icon={<X size={15} strokeWidth={1.9} />}
-                onClick={() => { setSearch(''); setRatingFilter('הכל'); setTypeFilter('הכל'); setNeighborhoodFilter('הכל'); setInspectorFilter('הכל'); setSourceFilter('הכל'); setSurveyFilter('הכל'); setDayFilter(null) }}
+                onClick={() => { setSearch(''); setRatingFilter('הכל'); setTypeFilter('הכל'); setNeighborhoodFilter('הכל'); setInspectorFilter('הכל'); setSourceFilter('הכל'); setSurveyFilter('הכל'); setRoundFilter('הכל'); setDayFilter(null) }}
               >
                 נקה סינון
               </Button>
@@ -525,6 +559,7 @@ export default function BusinessesPage() {
               <ul className="list-disc ps-5 flex flex-col gap-1.5">
                 <li><strong className="font-semibold">נכס בודד:</strong> בעמודת &quot;סוקר&quot; בוחרים &quot;נשלח לסוקר&quot;. השינוי נשמר מיד.</li>
                 <li><strong className="font-semibold">כמה נכסים יחד:</strong> מסמנים את הנכסים בתיבות הסימון בצד ימין של הטבלה (התיבה שבכותרת מסמנת את כל המוצגים כרגע, גם אחרי סינון), ולוחצים &quot;שלח לסוקר&quot; בפס הכחול שמופיע מעל הטבלה.</li>
+                <li><strong className="font-semibold">סבב יציאה לשטח:</strong> בכל שליחה בוחרים מספר סבב (מוצע אוטומטית הסבב הבא, ואפשר להזין מספר של סבב קיים כדי להוסיף אליו). נכס בודד שנשלח מעמודת &quot;סוקר&quot; מצטרף לסבב האחרון. התוצאות לכל סבב מופיעות בעמוד &quot;מעקב תוצאות סקר&quot;.</li>
                 <li><strong className="font-semibold">בזמן העלאת דוח:</strong> בעמוד &quot;העלאת דוח חדש&quot;, המתג &quot;הקצאה אוטומטית&quot; שולח לסוקר את כל הנכסים החדשים בדירוג &quot;גבוה&quot;.</li>
               </ul>
               <div className="mt-3 pt-3 border-t border-brand/15 flex flex-col gap-1 text-[12.5px] text-charcoal">
@@ -562,6 +597,15 @@ export default function BusinessesPage() {
                 {SURVEY_RESULT_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
                 <option value={REPORTED_AWAITING_DECISION}>{REPORTED_AWAITING_DECISION}</option>
                 <option value={NO_SURVEY_RESULT}>{NO_SURVEY_RESULT}</option>
+              </Select>
+              <Select value={roundFilter} onChange={e => setRoundFilter(e.target.value)}>
+                <option value="הכל">כל הסבבים</option>
+                {rounds.map(r => (
+                  <option key={r.number} value={String(r.number)}>
+                    {roundLabel(r.number)} · {formatRoundDate(r.sentAt)} ({(roundCounts.get(r.number) ?? 0).toLocaleString('he')})
+                  </option>
+                ))}
+                <option value={NO_ROUND}>{NO_ROUND}</option>
               </Select>
             </div>
           )}
@@ -611,13 +655,92 @@ export default function BusinessesPage() {
             <Button
               variant="primary"
               icon={<Send size={14} strokeWidth={1.9} />}
-              onClick={bulkSendToInspector}
+              onClick={openSendDialog}
               disabled={bulkUpdating}
               className="h-9"
             >
-              {bulkUpdating ? 'שולח...' : 'שלח לסוקר'}
+              שלח לסוקר
             </Button>
             <Button variant="ghost" onClick={() => setSelectedIds(new Set())} className="h-9">בטל בחירה</Button>
+          </div>
+        )}
+
+        {sendDialog && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/40 animate-fade-in"
+            onClick={() => { if (!bulkUpdating) setSendDialog(null) }}
+          >
+            <form
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="send-round-title"
+              onClick={e => e.stopPropagation()}
+              onSubmit={e => { e.preventDefault(); bulkSendToInspector() }}
+              className="w-full max-w-sm bg-surface rounded-2xl shadow-xl p-5 flex flex-col gap-4"
+            >
+              <div>
+                <h2 id="send-round-title" className="text-[16px] font-bold text-ink">שליחה לסוקר</h2>
+                <p className="text-[13px] text-graphite mt-1">
+                  <span className="num font-semibold text-ink">{visibleSelectedIds.length.toLocaleString('he')}</span> נכסים ייצאו לשטח בסבב:
+                </p>
+              </div>
+              <div>
+                <label htmlFor="send-round-number" className="block text-[12px] font-semibold text-charcoal mb-1">מספר סבב</label>
+                <Input
+                  id="send-round-number"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  step={1}
+                  required
+                  autoFocus
+                  value={sendDialog.round}
+                  onChange={e => setSendDialog(d => d && { ...d, round: e.target.value })}
+                  className="w-full num"
+                />
+                {(() => {
+                  const existing = rounds.find(r => r.number === Number(sendDialog.round))
+                  return (
+                    <p className="text-[12px] mt-1.5 text-subtle">
+                      {existing
+                        ? <>הנכסים יתווספו ל<span className="font-semibold text-brand">{roundLabel(existing.number)}</span> הקיים (נשלח <span className="num">{formatRoundDate(existing.sentAt)}</span>, <span className="num">{(roundCounts.get(existing.number) ?? 0).toLocaleString('he')}</span> נכסים)</>
+                        : 'ייפתח סבב חדש עם תאריך היום'}
+                    </p>
+                  )
+                })()}
+              </div>
+              <div>
+                <label htmlFor="send-round-note" className="block text-[12px] font-semibold text-charcoal mb-1">הערה לסבב (לא חובה)</label>
+                <Input
+                  id="send-round-note"
+                  value={sendDialog.note}
+                  onChange={e => setSendDialog(d => d && { ...d, note: e.target.value })}
+                  placeholder="למשל: גילה ופסגת זאב"
+                  className="w-full"
+                />
+              </div>
+              {rounds.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {rounds.slice(0, 6).map(r => (
+                    <button
+                      key={r.number}
+                      type="button"
+                      onClick={() => setSendDialog(d => d && { ...d, round: String(r.number) })}
+                      title={r.note || undefined}
+                      className={`num h-7 px-2.5 rounded-full text-[12px] font-semibold cursor-pointer border ${Number(sendDialog.round) === r.number ? 'bg-brand text-white border-brand' : 'bg-canvas text-charcoal border-hairline hover:border-brand/40'}`}
+                    >
+                      {roundLabel(r.number)} · {formatRoundDate(r.sentAt)}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <Button type="submit" icon={<Send size={14} strokeWidth={1.9} />} disabled={bulkUpdating}>
+                  {bulkUpdating ? 'שולח...' : 'שלח לסוקר'}
+                </Button>
+                <Button type="button" variant="secondary" onClick={() => setSendDialog(null)} disabled={bulkUpdating}>ביטול</Button>
+              </div>
+            </form>
           </div>
         )}
 
@@ -665,6 +788,7 @@ export default function BusinessesPage() {
                             {b.suspicionRating && <Badge tone={RATING_TONE[b.suspicionRating] ?? 'neutral'} pulse={b.suspicionRating === 'גבוה'}>{b.suspicionRating}</Badge>}
                             <Badge tone={SOURCE_TONE[b.source]}>{SOURCE_LABEL[b.source]}</Badge>
                             <span className="num text-[11.5px] text-subtle">{formatDate(b.uploadDate)}</span>
+                            {b.surveyRound && <span className="num text-[11.5px] font-semibold text-brand">· {roundLabel(b.surveyRound)}</span>}
                           </span>
                         </button>
                         <ChevronDown size={18} className={`text-subtle shrink-0 mt-1 transition-transform ${open ? 'rotate-180' : ''}`} />
@@ -768,6 +892,7 @@ export default function BusinessesPage() {
                           >
                             {INSPECTOR_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
                           </Select>
+                          {b.surveyRound && <span className="num block mt-1 text-[11.5px] font-semibold text-brand">{roundLabel(b.surveyRound)}</span>}
                         </td>
                         <td className="px-2.5 py-3" onClick={e => e.stopPropagation()}>
                           <Select
