@@ -1,11 +1,12 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { Send, Clock, ClipboardCheck, CheckCircle2 } from 'lucide-react'
 import { AppShell } from '@/components/AppShell'
 import { useRequireRole } from '@/lib/useRequireRole'
-import type { Business } from '@/lib/types'
+import type { Business, SurveyRound } from '@/lib/types'
+import { fetchRounds, roundKey, roundLabel, formatRoundDate, NO_ROUND } from '@/lib/surveyRounds'
 import { useBusinesses } from '@/lib/useBusinesses'
 import { Card, StatCard, Badge, Table, Thead, Tbody, Tr, Th, Td, EmptyState, CrossFilterBar, AnimatedNumber, LoadingMoreBanner, PageSkeleton } from '@/components/ui'
 import { useCrossFilter, chartItemProps } from '@/lib/useCrossFilter'
@@ -32,8 +33,10 @@ const SURVEY_DIMS = {
   // Only properties sent to the surveyor take part in the per-neighborhood
   // catch table, so only they carry a neighborhood value here.
   neighborhood: (b: Business) => (b.sentToInspector === 'נשלח לסוקר' && b.neighborhood) || null,
+  // Field-trip round, likewise only for properties sent to the surveyor.
+  round: (b: Business) => (b.sentToInspector === 'נשלח לסוקר' ? roundKey(b) : null),
 }
-const DIM_LABELS = { result: 'ממצא', neighborhood: 'שכונה' }
+const DIM_LABELS = { result: 'ממצא', neighborhood: 'שכונה', round: 'סבב' }
 const NO_NEIGHBORHOOD = 'ללא שכונה'
 
 // Catch rate per neighborhood: of what was sent to the surveyor, how much
@@ -55,6 +58,31 @@ function catchByNeighborhood(businesses: Business[]) {
   return [...rows.entries()]
     .map(([neighborhood, r]) => ({ neighborhood, ...r, pct: r.sent > 0 ? Math.round((r.caught / r.sent) * 100) : 0 }))
     .sort((a, b) => b.sent - a.sent || b.caught - a.caught)
+}
+
+// The same numbers per field-trip round, newest round first ("ללא סבב" last):
+// how each trip did on its own.
+function catchByRound(businesses: Business[]) {
+  const rows = new Map<string, { sent: number; reported: number; caught: number }>()
+  businesses.forEach(b => {
+    if (b.sentToInspector !== 'נשלח לסוקר') return
+    const key = roundKey(b)
+    const row = rows.get(key) ?? { sent: 0, reported: 0, caught: 0 }
+    row.sent += 1
+    if (b.surveyResultDetail) {
+      row.reported += 1
+      if (b.surveyResultDetail !== 'לא נמצא עסק/פער שטח') row.caught += 1
+    }
+    rows.set(key, row)
+  })
+  const order = (k: string) => (k === NO_ROUND ? -1 : Number(k))
+  return [...rows.entries()]
+    .map(([round, r]) => ({
+      round, ...r,
+      completionPct: r.sent > 0 ? Math.round((r.reported / r.sent) * 100) : 0,
+      pct: r.sent > 0 ? Math.round((r.caught / r.sent) * 100) : 0,
+    }))
+    .sort((a, b) => order(b.round) - order(a.round))
 }
 
 function computeStats(businesses: Business[]) {
@@ -91,6 +119,12 @@ export default function SurveyTrackingPage() {
   const donut = useMemo(() => computeStats(resultFiltered), [resultFiltered])
   const neighborhoodFiltered = cf.filteredExcept('neighborhood')
   const neighborhoodRows = useMemo(() => catchByNeighborhood(neighborhoodFiltered), [neighborhoodFiltered])
+  const roundFiltered = cf.filteredExcept('round')
+  const roundRows = useMemo(() => catchByRound(roundFiltered), [roundFiltered])
+  const [rounds, setRounds] = useState<Map<string, SurveyRound>>(new Map())
+  useEffect(() => {
+    fetchRounds().then(list => setRounds(new Map(list.map(r => [String(r.number), r]))))
+  }, [])
 
   const arcs = donut.resultSegments.reduce<{ list: (typeof donut.resultSegments[number] & { pct: number; dashoffset: number })[]; offset: number }>(
     (acc, seg) => {
@@ -116,7 +150,7 @@ export default function SurveyTrackingPage() {
     <AppShell title="מעקב תוצאות סקר" subtitle="מה קרה עם הנכסים שנשלחו לשטח">
       <div className="flex flex-col gap-5">
         <LoadingMoreBanner progress={loadingMore} />
-        <CrossFilterBar cf={cf} dimLabels={DIM_LABELS} valueLabel={(dim, v) => dim === 'result' ? RESULT_LABELS[v] ?? v : v} />
+        <CrossFilterBar cf={cf} dimLabels={DIM_LABELS} valueLabel={(dim, v) => dim === 'result' ? RESULT_LABELS[v] ?? v : dim === 'round' && v !== NO_ROUND ? roundLabel(Number(v)) : v} />
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard
@@ -209,6 +243,7 @@ export default function SurveyTrackingPage() {
                     <Th>סוג עסק</Th>
                     <Th>כתובת</Th>
                     <Th>שכונה</Th>
+                    <Th>סבב</Th>
                     <Th>ממצא</Th>
                   </Tr>
                 </Thead>
@@ -219,6 +254,7 @@ export default function SurveyTrackingPage() {
                       <Td className="text-charcoal">{b.type || '—'}</Td>
                       <Td className="text-charcoal">{b.address}</Td>
                       <Td className="text-charcoal">{b.neighborhood || '—'}</Td>
+                      <Td className="num text-charcoal">{b.surveyRound ?? '—'}</Td>
                       <Td>
                         {b.surveyResultDetail ? (
                           <span className="inline-flex items-center gap-1.5 text-[12.5px] text-charcoal">
@@ -236,6 +272,56 @@ export default function SurveyTrackingPage() {
             )}
           </Card>
         )}
+
+        <Card padded={false}>
+          <div className="flex items-center justify-between px-5 py-4 border-b border-hairline">
+            <span className="text-[14.5px] font-bold text-ink">תוצאות לפי סבב יציאה לשטח</span>
+            <span className="text-[11.5px] text-subtle">כל סבב בנפרד · לחיצה על סבב מסננת את כל העמוד</span>
+          </div>
+          {roundRows.length === 0 ? (
+            <EmptyState title="עדיין לא נשלחו נכסים לסוקר" />
+          ) : (
+            <Table>
+              <Thead>
+                <Tr>
+                  <Th>סבב</Th>
+                  <Th>נשלח</Th>
+                  <Th>נשלחו</Th>
+                  <Th>דווחו</Th>
+                  <Th>נתפסו</Th>
+                  <Th>אחוז תפיסה</Th>
+                </Tr>
+              </Thead>
+              <Tbody>
+                {roundRows.map(r => {
+                  const info = rounds.get(r.round)
+                  const label = r.round === NO_ROUND ? NO_ROUND : roundLabel(Number(r.round))
+                  const item = chartItemProps(cf, 'round', r.round, `${label}: ${r.caught} מתוך ${r.sent}`)
+                  return (
+                    <Tr key={r.round} {...item} className={`${item.className} ${item['aria-pressed'] ? 'bg-brand/[0.06]' : ''}`}>
+                      <Td className="font-semibold">
+                        {label}
+                        {info?.note && <span className="block text-[11.5px] font-normal text-subtle">{info.note}</span>}
+                      </Td>
+                      <Td className="num text-charcoal">{info ? formatRoundDate(info.sentAt) : '—'}</Td>
+                      <Td className="num">{r.sent}</Td>
+                      <Td className="num">{r.reported} <span className="text-[11.5px] text-subtle">({r.completionPct}%)</span></Td>
+                      <Td className="num font-semibold text-ink">{r.caught}</Td>
+                      <Td>
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-20 h-1.5 bg-canvas rounded-full overflow-hidden">
+                            <span className="bar-grow block h-full bg-brand-light rounded-full transition-[width] duration-500 ease-out" style={{ width: `${r.pct}%` }} />
+                          </div>
+                          <span className="num text-[12.5px] font-bold text-brand">{r.pct}%</span>
+                        </div>
+                      </Td>
+                    </Tr>
+                  )
+                })}
+              </Tbody>
+            </Table>
+          )}
+        </Card>
 
         <Card padded={false}>
           <div className="flex items-center justify-between px-5 py-4 border-b border-hairline">
@@ -296,6 +382,7 @@ export default function SurveyTrackingPage() {
                 <Tr>
                   <Th>נכס</Th>
                   <Th>שכונה</Th>
+                  <Th>סבב</Th>
                   <Th>דירוג</Th>
                 </Tr>
               </Thead>
@@ -304,6 +391,7 @@ export default function SurveyTrackingPage() {
                   <Tr key={b.id}>
                     <Td className="font-semibold">{b.name}</Td>
                     <Td className="text-charcoal">{b.neighborhood || '—'}</Td>
+                    <Td className="num text-charcoal">{b.surveyRound ?? '—'}</Td>
                     <Td><Badge tone={RATING_TONE[b.suspicionRating] ?? 'neutral'}>{b.suspicionRating}</Badge></Td>
                   </Tr>
                 ))}
