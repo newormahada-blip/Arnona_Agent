@@ -43,7 +43,7 @@ import openpyxl
 HERE = Path(__file__).resolve().parent
 DATA = HERE / 'data'
 REPO_DATA = HERE.parents[1] / 'data'   # Arnona_Agent keeps the registry in <repo>/data
-RAW = 'https://raw.githubusercontent.com/urbandetective007/Arnona_Agent/main/data/'
+RAW = 'https://raw.githubusercontent.com/newormahada-blip/Arnona_Agent/main/data/'
 USER_AGENT = 'ArnonaAgentProject/1.0 (Jerusalem municipality property map)'
 BOUNDS = dict(south=31.70, north=31.90, west=35.07, east=35.32)
 

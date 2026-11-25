@@ -104,7 +104,7 @@ These fields are not parsed from the Excel file.
 
 1. **File Format:** Save as `.xlsx` (Excel format)
 2. **File Name:** Any name is fine (e.g., `businesses.xlsx`, `arnona_report.xlsx`)
-3. **Upload Method:** Go to https://urbandetective007.github.io/Arnona_Agent/businesses → Upload page
+3. **Upload Method:** Go to https://newormahada-blip.github.io/Arnona_Agent/businesses → Upload page
 4. **Validation:** The system will:
    - Check for "שם העסק" header
    - Parse all 8 columns
