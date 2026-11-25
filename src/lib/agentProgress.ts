@@ -3,11 +3,11 @@
 import { useEffect, useState } from 'react'
 
 // Where the scanning agent is. The agent (the "Game" routine) walks the
-// address list in Final_Project/Adresses.xlsx row by row — the list is sorted
-// neighborhood by neighborhood — and after every run pushes the next row to
-// scan to Final_Project/index ("index = N", 0-based over the data rows). Both
-// files are public, so the site reads them straight from GitHub: there's no
-// copy here to fall out of date.
+// address list in Final_Project row by row — the list is sorted neighborhood
+// by neighborhood — and after every run pushes the next row to scan. The
+// address list itself is municipal data and is not public, so Final_Project
+// publishes agent_progress.json: only the pointer, the total and the
+// neighborhood blocks (no addresses). The site reads that straight from GitHub.
 //
 // What this can't tell: when a given address was scanned. Status is derived
 // from the pointer only, so it's as accurate as the index the agent pushes.
@@ -15,7 +15,7 @@ import { useEffect, useState } from 'react'
 const REPO = 'newormahada-blip/Final_Project'
 const RAW = `https://raw.githubusercontent.com/${REPO}/main`
 export const NO_NEIGHBORHOOD = 'ללא שכונה'
-const CACHE_KEY = 'agent_progress_v2'
+const CACHE_KEY = 'agent_progress_v3'
 const CACHE_MS = 10 * 60 * 1000
 
 export interface AgentBlock { name: string; start: number; count: number }
@@ -24,6 +24,7 @@ export interface AgentProgress {
   /** Next row the agent will scan (0-based); 0 after it wraps around. */
   index: number
   total: number
+  /** Not published any more (the address list is private); always null. */
   nextAddress: string | null
   /** Runs of consecutive rows with the same neighborhood, in file order. */
   blocks: AgentBlock[]
@@ -54,28 +55,25 @@ export function scanByNeighborhood(p: AgentProgress): NeighborhoodScan[] {
     .sort((a, b) => a.order - b.order)
 }
 
-async function load(): Promise<AgentProgress> {
-  const [indexText, xlsxBuf] = await Promise.all([
-    fetch(`${RAW}/index`, { cache: 'no-store' }).then(r => { if (!r.ok) throw new Error(`index ${r.status}`); return r.text() }),
-    fetch(`${RAW}/Adresses.xlsx`).then(r => { if (!r.ok) throw new Error(`Adresses.xlsx ${r.status}`); return r.arrayBuffer() }),
-  ])
-  const XLSX = await import('xlsx')
-  const wb = XLSX.read(xlsxBuf, { type: 'array' })
-  const rows = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[wb.SheetNames[0]], { header: 1, blankrows: false })
-  // Same rows the agent reads: skip the header, keep rows with an address.
-  const data = rows.slice(1).filter(r => r[0] !== undefined && r[0] !== null && String(r[0]).trim())
-  const blocks: AgentBlock[] = []
-  data.forEach((r, i) => {
-    const name = String(r[1] ?? '').trim() || NO_NEIGHBORHOOD
-    const last = blocks[blocks.length - 1]
-    if (last && last.name === name) last.count += 1
-    else blocks.push({ name, start: i, count: 1 })
-  })
-  const m = indexText.match(/index\s*=\s*(\d+)/)
-  let index = m ? Number(m[1]) : 0
-  if (index >= data.length) index = 0   // the agent wraps the same way
+interface PublishedProgress {
+  index: number
+  total: number
+  blocks: { neighborhood: string | null; start: number; end: number; count: number }[]
+}
 
-  return { index, total: data.length, nextAddress: data[index] ? String(data[index][0]) : null, blocks }
+async function load(): Promise<AgentProgress> {
+  const r = await fetch(`${RAW}/agent_progress.json`, { cache: 'no-store' })
+  if (!r.ok) throw new Error(`agent_progress.json ${r.status}`)
+  const p = (await r.json()) as PublishedProgress
+  const blocks: AgentBlock[] = p.blocks.map(b => ({
+    name: String(b.neighborhood ?? '').trim() || NO_NEIGHBORHOOD,
+    start: b.start,
+    count: b.count,
+  }))
+  let index = Number(p.index) || 0
+  if (index >= p.total) index = 0   // the agent wraps the same way
+
+  return { index, total: p.total, nextAddress: null, blocks }
 }
 
 export function useAgentProgress(): { progress: AgentProgress | null; error: boolean } {
