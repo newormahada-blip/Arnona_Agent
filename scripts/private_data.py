@@ -11,8 +11,12 @@ object key one to one, except that Hebrew report names get ASCII names
   reports/עסקים לבדיקה ...                        -> reports/review_businesses_...
 arnona_agent/manifest.json lists what was moved out of git, with checksums.
 
-Needs env SUPABASE_URL and SUPABASE_KEY (a service key: the bucket has no
-policies, so only a key that bypasses RLS can read or write it).
+Key: the bucket has no policies, so only a key that bypasses RLS (a service
+key) can read or write it. Taken from, in order:
+  SUPABASE_KEY, then SUPABASE_SERVICE_KEY  — a real key, sent in apikey + Authorization;
+  neither set (or SUPABASE_KEY_VIA_PROXY=1) — a dummy value in `apikey` only,
+    for sessions where a network proxy injects the real key into that header.
+SUPABASE_URL defaults to the Jerusalem project.
 
 Usage:
   python scripts/private_data.py pull <repo-path> [<repo-path> ...]
@@ -54,15 +58,17 @@ def object_key(repo_path: str) -> str:
     return PREFIX + head + name
 
 
+DEFAULT_URL = "https://mcsygsqfyuaexxxwsgem.supabase.co"
+
+
 def _base_and_headers():
-    url = os.environ["SUPABASE_URL"].rstrip("/")
-    key = os.environ["SUPABASE_KEY"]
-    headers = {"apikey": key}
-    # Under the agent proxy the key is injected into `apikey`; a dummy
-    # Authorization would override it, so only send one with a real JWT/key.
-    if not os.environ.get("SUPABASE_KEY_VIA_PROXY"):
-        headers["Authorization"] = f"Bearer {key}"
-    return f"{url}/storage/v1", headers
+    url = (os.environ.get("SUPABASE_URL") or DEFAULT_URL).rstrip("/")
+    key = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_KEY")
+    if not key or os.environ.get("SUPABASE_KEY_VIA_PROXY"):
+        # The proxy puts the real key into `apikey`. No Authorization header:
+        # a dummy one would be checked instead of the injected key.
+        return f"{url}/storage/v1", {"apikey": "proxy-injected"}
+    return f"{url}/storage/v1", {"apikey": key, "Authorization": f"Bearer {key}"}
 
 
 def pull(repo_path: str, dest: str | None = None) -> Path:

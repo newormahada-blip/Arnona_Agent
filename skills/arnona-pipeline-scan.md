@@ -48,10 +48,15 @@ compatibility:
 ```bash
 git clone https://github.com/newormahada-blip/Arnona_Agent.git /tmp/repo
 pip install pandas openpyxl requests -q
+# The arnona address list is not in the public repo: download it from the
+# private bucket (the session's proxy injects the Supabase key — no key here).
+python /tmp/repo/scripts/private_data.py pull scripts/data/arnona_data.xlsx
 python -c "import zipfile; zipfile.ZipFile('/tmp/repo/skills/business-address-lookup.skill').extractall('/tmp/skill_lookup')"
 cat /tmp/skill_lookup/business-address-lookup/SKILL.md
 cat /tmp/repo/skills/arnona-upload.md
 ```
+
+אם ההורדה נכשלת (401/403 — המפתח לא מוזן בסביבה): עצור ודווח. אל תמשיך בלי קובץ הכתובות.
 
 קרא את שני הקבצים לפני שממשיכים.
 
