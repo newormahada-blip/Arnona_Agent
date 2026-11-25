@@ -16,6 +16,7 @@ import { placementFor, neighborhoodOf, streetViewUrl } from '@/lib/placement'
 import { fetchReportsByBusiness } from '@/lib/surveyReports'
 import { flushQueue, listQueued, onQueueChange } from '@/lib/offlineQueue'
 import { SurveyReportSheet } from '@/components/SurveyReportSheet'
+import { roundLabel } from '@/lib/surveyRounds'
 import { InstallLink } from '@/components/PwaSetup'
 import type { BadgeTone } from '@/components/ui'
 
@@ -233,6 +234,17 @@ export default function WorkPlanPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- dist only reads distanceById
   }, [pending, checkedAtLoad, distanceById, myPos])
 
+  // Field-trip rounds the pending properties belong to, oldest first. A round
+  // badge on each property only shows when the list mixes several rounds.
+  const pendingRounds = useMemo(
+    () => [...new Set(pending.map(b => b.surveyRound).filter((n): n is number => !!n))].sort((a, b) => a - b),
+    [pending]
+  )
+  const mixedRounds = pendingRounds.length > 1
+  const roundsTitle = pendingRounds.length === 0 ? null
+    : pendingRounds.length === 1 ? roundLabel(pendingRounds[0])
+    : <>סבבים <span dir="ltr">{pendingRounds.length === 2 ? `${pendingRounds[0]}, ${pendingRounds[1]}` : `${pendingRounds[0]}–${pendingRounds[pendingRounds.length - 1]}`}</span></>
+
   const doneCount = pending.filter(b => checked.has(b.id)).length
   const donePct = pending.length > 0 ? Math.round((doneCount / pending.length) * 100) : 0
 
@@ -263,7 +275,14 @@ export default function WorkPlanPage() {
               <p className="text-[12.5px]" style={{ color: '#8fa8c8' }}>
                 {DAY_NAMES[today.getDay()]} · <span className="num">{today.toLocaleDateString('he-IL', { day: 'numeric', month: 'long' })}</span>
               </p>
-              <p className="text-white text-[21px] font-bold mt-0.5 tracking-tight">תוכנית העבודה שלך</p>
+              <p className="text-white text-[21px] font-bold mt-0.5 tracking-tight flex items-center gap-2 flex-wrap">
+                תוכנית העבודה שלך
+                {roundsTitle && (
+                  <span className="num h-6 px-2.5 rounded-full text-[12px] font-semibold flex items-center gap-1" style={{ background: 'rgba(255,255,255,0.12)', color: '#cfe0ff' }}>
+                    {roundsTitle}
+                  </span>
+                )}
+              </p>
             </div>
             <button
               type="button"
@@ -456,6 +475,9 @@ export default function WorkPlanPage() {
                                 {km !== undefined && <span className="num"> · {formatDistance(km)}</span>}
                               </p>
                             </button>
+                            {mixedRounds && b.surveyRound && (
+                              <span className="num shrink-0 text-[11px] font-semibold text-brand bg-brand/[0.07] rounded-full px-2 h-6 flex items-center">{roundLabel(b.surveyRound)}</span>
+                            )}
                             {b.suspicionRating && (
                               <Badge tone={RATING_TONE[b.suspicionRating] ?? 'neutral'} className="shrink-0">{b.suspicionRating}</Badge>
                             )}
