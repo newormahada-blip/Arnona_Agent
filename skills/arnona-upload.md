@@ -27,7 +27,7 @@ description: >
 ```python
 import requests
 
-url = "https://raw.githubusercontent.com/urbandetective007/Arnona_Agent/main/reports/arnona_next_index.txt"
+url = "https://raw.githubusercontent.com/newormahada-blip/Arnona_Agent/main/reports/arnona_next_index.txt"
 start_index = int(requests.get(url, timeout=10).text.strip())
 ```
 

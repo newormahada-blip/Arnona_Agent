@@ -12,7 +12,7 @@ import { useEffect, useState } from 'react'
 // What this can't tell: when a given address was scanned. Status is derived
 // from the pointer only, so it's as accurate as the index the agent pushes.
 
-const REPO = 'urbandetective007/Final_Project'
+const REPO = 'newormahada-blip/Final_Project'
 const RAW = `https://raw.githubusercontent.com/${REPO}/main`
 export const NO_NEIGHBORHOOD = 'ללא שכונה'
 const CACHE_KEY = 'agent_progress_v2'
