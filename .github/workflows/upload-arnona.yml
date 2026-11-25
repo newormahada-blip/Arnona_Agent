@@ -39,14 +39,15 @@ jobs:
         run: |
           REPORT=$(find reports -name "דוח נכסים לבדיקה*.xlsx" -type f -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)
           if [ -z "$REPORT" ]; then
-            echo "No report found"
-            exit 1
+            # e.g. a push that only removed old reports: nothing to upload
+            echo "No new report found — skipping the upload"
+            exit 0
           fi
           echo "report=$REPORT" >> $GITHUB_OUTPUT
           echo "Found report: $REPORT"
 
       - name: Upload to Supabase
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && steps.find_report.outputs.report != ''
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
