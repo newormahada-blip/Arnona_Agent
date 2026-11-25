@@ -17,7 +17,7 @@ compatibility:
     - openpyxl
     - requests
   external:
-    - GitHub repo: https://github.com/urbandetective007/Arnona_Agent.git
+    - GitHub repo: https://github.com/newormahada-blip/Arnona_Agent.git
     - Supabase (credentials in arnona-upload.md)
 ---
 
@@ -46,7 +46,7 @@ compatibility:
 ## STEP 0 — Setup
 
 ```bash
-git clone https://github.com/urbandetective007/Arnona_Agent.git /tmp/repo
+git clone https://github.com/newormahada-blip/Arnona_Agent.git /tmp/repo
 pip install pandas openpyxl requests -q
 python -c "import zipfile; zipfile.ZipFile('/tmp/repo/skills/business-address-lookup.skill').extractall('/tmp/skill_lookup')"
 cat /tmp/skill_lookup/business-address-lookup/SKILL.md

@@ -5,5 +5,5 @@ git add .
 git commit -m "%~1"
 git push
 echo.
-echo Done! Vercel is updating: https://arnona-agent.vercel.app/
+echo Done! GitHub Pages is updating: https://newormahada-blip.github.io/Arnona_Agent/
 pause

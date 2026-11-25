@@ -3,10 +3,10 @@ import { cleanAddress, parseAddress } from './geocode'
 // When are two businesses the same one? The raw "name|address" string is not
 // enough: the agent writes "התיבונים 7, ירושלים" one day and "התיבונים 7" the
 // next, "ד"ר" with ״ or with ", with or without "בע"מ". Every upload path
-// (this site, the GitHub workflow, the relay, the Python scripts and the
+// (this site, the GitHub workflow, the Python scripts and the
 // database trigger business_dedup_key()) compares businesses by the same key,
 // built the same way — keep them in sync:
-//   scripts/arnona_common.py · vercel-relay/api/upload.js ·
+//   scripts/arnona_common.py ·
 //   supabase/migrations/20261117_business_dedup_key.sql
 
 const STREET_PREFIXES = ['שכ ', 'שכונת ', 'דרך ', 'רחוב ', 'שדרות ', 'שד ', 'הרבנית ', 'הרב ', 'האדמור ', 'רבי ', 'ר ']

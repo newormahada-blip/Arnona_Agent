@@ -3,7 +3,7 @@
 sync_known_businesses.py — run by the "Game" routine (repo Final_Project) at
 the start of every run, BEFORE the first search:
 
-  curl -sfo /tmp/sync_known.py https://raw.githubusercontent.com/urbandetective007/Arnona_Agent/main/scripts/sync_known_businesses.py
+  curl -sfo /tmp/sync_known.py https://raw.githubusercontent.com/newormahada-blip/Arnona_Agent/main/scripts/sync_known_businesses.py
   python3 /tmp/sync_known.py known_businesses
 
 Adds to known_businesses/known_businesses.xlsx every business that is in the
@@ -24,7 +24,7 @@ import sys
 import urllib.request
 from datetime import date
 
-SNAPSHOT_URL = "https://raw.githubusercontent.com/urbandetective007/Arnona_Agent/main/reports/agent_snapshot.json"
+SNAPSHOT_URL = "https://raw.githubusercontent.com/newormahada-blip/Arnona_Agent/main/reports/agent_snapshot.json"
 SOURCE = "מערכת (אתר)"
 
 
