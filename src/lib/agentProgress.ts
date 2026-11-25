@@ -6,8 +6,9 @@ import { useEffect, useState } from 'react'
 // address list in Final_Project row by row — the list is sorted neighborhood
 // by neighborhood — and after every run pushes the next row to scan. The
 // address list itself is municipal data and is not public, so Final_Project
-// publishes agent_progress.json: only the pointer, the total and the
-// neighborhood blocks (no addresses). The site reads that straight from GitHub.
+// publishes agent_progress.json: only the total and the neighborhood blocks
+// (no addresses). The pointer is in Final_Project/index. The site reads both
+// straight from GitHub.
 //
 // What this can't tell: when a given address was scanned. Status is derived
 // from the pointer only, so it's as accurate as the index the agent pushes.
@@ -55,22 +56,26 @@ export function scanByNeighborhood(p: AgentProgress): NeighborhoodScan[] {
     .sort((a, b) => a.order - b.order)
 }
 
+/** Final_Project/agent_progress.json: the list's shape only (no addresses). */
 interface PublishedProgress {
-  index: number
   total: number
   blocks: { neighborhood: string | null; start: number; end: number; count: number }[]
 }
 
 async function load(): Promise<AgentProgress> {
-  const r = await fetch(`${RAW}/agent_progress.json`, { cache: 'no-store' })
-  if (!r.ok) throw new Error(`agent_progress.json ${r.status}`)
-  const p = (await r.json()) as PublishedProgress
+  // The pointer lives in Final_Project/index ("index = N"), which the agent
+  // pushes after every run; the blocks change only when the list does.
+  const [indexText, p] = await Promise.all([
+    fetch(`${RAW}/index`, { cache: 'no-store' }).then(r => { if (!r.ok) throw new Error(`index ${r.status}`); return r.text() }),
+    fetch(`${RAW}/agent_progress.json`, { cache: 'no-store' }).then(r => { if (!r.ok) throw new Error(`agent_progress.json ${r.status}`); return r.json() as Promise<PublishedProgress> }),
+  ])
   const blocks: AgentBlock[] = p.blocks.map(b => ({
     name: String(b.neighborhood ?? '').trim() || NO_NEIGHBORHOOD,
     start: b.start,
     count: b.count,
   }))
-  let index = Number(p.index) || 0
+  const m = indexText.match(/index\s*=\s*(\d+)/)
+  let index = m ? Number(m[1]) : 0
   if (index >= p.total) index = 0   // the agent wraps the same way
 
   return { index, total: p.total, nextAddress: null, blocks }
