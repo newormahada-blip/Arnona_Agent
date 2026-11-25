@@ -71,6 +71,13 @@ python3 tools/neighborhoods/assign_neighborhoods.py "<קובץ הכתובות ה
 | `data/address_cache.csv` | כתובת ← שכונה, לכל כתובת שכבר הוכרעה |
 | `data/geocode_cache.jsonl` | מיקום ב-OSM לכל כתובת שאותרה במפה |
 
+`address_cache.csv` ו-`geocode_cache.jsonl` מכילים כתובות מרשימת הארנונה, ולכן הם לא בריפו (ב-`.gitignore`). הם שמורים ב-bucket הפרטי ב-Supabase.
+לפני ריצה מורידים אותם, ואחריה מעלים את הגרסה המעודכנת (צריך `SUPABASE_URL` ו-`SUPABASE_KEY` של מפתח שירות):
+```
+python scripts/private_data.py pull tools/neighborhoods/data/address_cache.csv tools/neighborhoods/data/geocode_cache.jsonl
+python scripts/private_data.py push tools/neighborhoods/data/address_cache.csv tools/neighborhoods/data/geocode_cache.jsonl
+```
+
 רשימת השכונות ומרכזי השכונות נקראים מ-`data/` של Arnona_Agent: מקומית כשהכלי רץ בתוך Arnona_Agent, ומ-GitHub (ענף `main`) כשהוא רץ ב-Final_Project.
 
 ## מגבלות

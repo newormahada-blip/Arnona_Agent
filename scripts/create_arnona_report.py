@@ -36,7 +36,10 @@ parser.add_argument("--only-high",  action="store_true",
 args = parser.parse_args()
 
 # ── Load files ────────────────────────────────────────────────────────────────
-arnona     = pd.read_excel(args.arnona)
+# The arnona list is not in the public repo; it's downloaded from the private
+# bucket when missing (env SUPABASE_URL, SUPABASE_KEY — see private_data.py).
+from private_data import ensure_local
+arnona     = pd.read_excel(ensure_local(args.arnona))
 businesses = pd.read_excel(args.businesses)
 
 # ── Parse addresses ───────────────────────────────────────────────────────────

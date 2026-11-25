@@ -266,6 +266,21 @@ jobs:
           print(f"Session: {session_id}")
           EOF
 
+      - name: Move report files to the private bucket (out of the public repo)
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          # Report spreadsheets hold municipal data, so they never stay in git:
+          # copy each one to private-data/arnona_agent/reports/ and remove it.
+          shopt -s nullglob
+          for f in reports/*.xlsx; do
+            python scripts/private_data.py push "$f"
+            git rm -q --cached "$f" 2>/dev/null || true
+            rm -f "$f"
+          done
+
       - name: Refresh the agent's snapshot (existing businesses + business types)
         if: always()
         env:

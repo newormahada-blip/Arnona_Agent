@@ -46,3 +46,12 @@ __pycache__/
 
 # Excel-parsing Web Worker, bundled by `npm run build:worker` (runs before dev/build)
 /public/workers/
+
+# Municipal data — kept in the private Supabase bucket (scripts/private_data.py),
+# never in this public repo
+/reports/*.xlsx
+/scripts/data/archive/
+# scripts/data/arnona_data.xlsx stays until the scan routine reads it from the bucket
+/public/arnona_lookup.json
+/tools/neighborhoods/data/address_cache.csv
+/tools/neighborhoods/data/geocode_cache.jsonl
